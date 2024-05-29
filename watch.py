@@ -1,4 +1,5 @@
 import sys
+import time
 import psutil
 import logging
 from watchdog.observers import Observer
@@ -22,9 +23,9 @@ def kill_gunicorn():
         if 'gunicorn' in process.name():
             process.kill()
 
-def run_gunicorn_http(hostname=None, port=None):
-    hostname = hostname or settings.SMARTWATCH_HTTP_HOST
-    port = port or settings.SMARTWATCH_HTTP_PORT
+def start_gunicorn(hostname=None, port=None):
+    hostname = hostname or settings.SMARTWATCH_GUNICORN_HOST
+    port = port or settings.SMARTWATCH_GUNICORN_PORT
     kill_gunicorn()
     os.system(f'gunicorn -b {hostname}:{port} {get_project_name()}.wsgi:application')
 
@@ -35,26 +36,41 @@ def kill_daphne():
             process.kill()
 
 
-def run_daphne_ws(hostname=None, port=None):
-    hostname = hostname or settings.SMARTWATCH_WS_HOST
-    port = port or settings.SMARTWATCH_WS_PORT
+def start_daphne(hostname=None, port=None):
+    hostname = hostname or settings.SMARTWATCH_DAPHNE_HOST
+    port = port or settings.SMARTWATCH_DAPHNE_PORT
     kill_daphne()
     os.system(f'daphne -b {hostname} -p {port} {get_project_name()}.asgi:application')
 
 
 def start_servers():
-    Process(target=run_gunicorn_http).start()
-    # Process(target=run_daphne_ws).start()
+    if settings.SMARTWATCH_USE_GUNICORN:
+        Process(target=start_gunicorn).start()
+    if settings.SMARTWATCH_USE_DAPHNE:
+        Process(target=start_daphne).start()
     print('started the servers')
 
 
 class ServerHandler(FileSystemEventHandler):
+    DEBOUNCE_SECONDS = 1
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.last_modified = time.time()
+
     def on_modified(self, event):
+        current_time = time.time()
+        if current_time - self.last_modified < self.DEBOUNCE_SECONDS:
+            return
+        self.last_modified = current_time
+
         should_restart = event.src_path.endswith('.py')
-        if event.src_path == 'requirements.txt':
+        if 'requirements.txt' in event.src_path:
             logging.info(f'{event.src_path} has been modified. Installing requirements...')
             should_restart = True
             os.system('pip install -r requirements.txt')
+        if 'templates' in event.src_path:
+            should_restart = True
         if settings.SMARTWATCH_MIGRATE and 'migrations' in event.src_path:
             should_restart = False
             logging.info(f'{event.src_path} has been modified. Running migrations...')
